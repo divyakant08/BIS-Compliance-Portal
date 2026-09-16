@@ -1,0 +1,74 @@
+[
+  {
+    "cml_number": "CM/L-8400192408",
+    "manufacturer": "AquaPure Beverages Pvt Ltd",
+    "standard": "IS 14543",
+    "product_name": "Packaged Drinking Water (Other than Packaged Natural Mineral Water)",
+    "brand_name": "AquaPure",
+    "valid_from": "2023-01-15",
+    "valid_to": "2027-01-14",
+    "status": "VALID",
+    "factory_address": "Plot No. 42, Industrial Area Phase II, Mohali, Punjab - 160055",
+    "marking_fee_status": "PAID"
+  },
+  {
+    "cml_number": "CM/L-7200185912",
+    "manufacturer": "Himalayan Spring Waters Ltd",
+    "standard": "IS 13428",
+    "product_name": "Packaged Natural Mineral Water",
+    "brand_name": "HimalayaGlacier",
+    "valid_from": "2022-06-01",
+    "valid_to": "2026-05-31",
+    "status": "VALID",
+    "factory_address": "Khasra No. 128, Paonta Sahib, Sirmour, Himachal Pradesh - 173025",
+    "marking_fee_status": "PAID"
+  },
+  {
+    "cml_number": "CM/L-6100143890",
+    "manufacturer": "Apex Tech Electronics Corp",
+    "standard": "IS 13252 (Part 1)",
+    "product_name": "Information Technology Equipment - Safety (Power Adapters)",
+    "brand_name": "ApexVolt",
+    "valid_from": "2021-03-10",
+    "valid_to": "2024-03-09",
+    "status": "EXPIRED",
+    "factory_address": "Sector 63, Block A, Noida, Uttar Pradesh - 201301",
+    "marking_fee_status": "OVERDUE"
+  },
+  {
+    "cml_number": "CM/L-9300221456",
+    "manufacturer": "Bharat Steel & Alloys Ltd",
+    "standard": "IS 1786",
+    "product_name": "High Strength Deformed Steel Bars and Wires for Concrete Reinforcement",
+    "brand_name": "BharatTMT Fe500D",
+    "valid_from": "2023-08-20",
+    "valid_to": "2028-08-19",
+    "status": "VALID",
+    "factory_address": "Survey 341, Durgapur Industrial Estate, Paschim Bardhaman, West Bengal - 713203",
+    "marking_fee_status": "PAID"
+  },
+  {
+    "cml_number": "CM/L-5500119874",
+    "manufacturer": "Delta Cables & Conductors Ltd",
+    "standard": "IS 694",
+    "product_name": "PVC Insulated Cables for Working Voltages up to and including 1100V",
+    "brand_name": "DeltaWire",
+    "valid_from": "2020-11-05",
+    "valid_to": "2025-11-04",
+    "status": "SUSPENDED",
+    "factory_address": "GIDC Estate, Vapi, Valsad, Gujarat - 396195",
+    "marking_fee_status": "UNDER_REVIEW"
+  },
+  {
+    "cml_number": "CM/L-1234567",
+    "manufacturer": "Standard Test Laboratories Inc",
+    "standard": "IS 14543",
+    "product_name": "Packaged Drinking Water",
+    "brand_name": "SampleTest",
+    "valid_from": "2024-01-01",
+    "valid_to": "2029-01-01",
+    "status": "VALID",
+    "factory_address": "Plot 10, Okhla Industrial Area Phase III, New Delhi - 110020",
+    "marking_fee_status": "PAID"
+  }
+]
