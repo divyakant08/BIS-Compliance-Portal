@@ -1,349 +1,319 @@
-# BIS Standard Compliance & Analytics Portal
-## Enterprise System Architecture, Design Decisions & Technical Manual (v2.3)
+# PROJECT ARCHITECTURE
+
+**ManakSetu — BIS Compliance & Analytics Portal**
+
+This document specifies the four-tier architecture, processing pipelines, and resilience model of the portal. It is intended for engineers extending search, vision OCR, gap analysis, or export.
 
 ---
 
-## Table of Contents
+## 1. System Architecture Overview
 
-1. [Executive Summary](#1-executive-summary)
-2. [Monorepo Architecture & Clean Navigation](#2-monorepo-architecture--clean-navigation)
-3. [Technology Stack & Technical Justifications](#3-technology-stack--technical-justifications)
-4. [Sidebar Multi-Document Selector & Global State](#4-sidebar-multi-document-selector--global-state)
-5. [Unified Standards Search: Mode Toggle & Embedded Voice](#5-unified-standards-search-mode-toggle--embedded-voice)
-6. [Core Workflows & Data Flows](#6-core-workflows--data-flows)
-   - [Workflow 1: Unified Standards Search (BIS Repository & Custom PDF Mode)](#workflow-1-unified-standards-search-bis-repository--custom-pdf-mode)
-   - [Workflow 2: Predictive Gap Analysis Flow](#workflow-2-predictive-gap-analysis-flow)
-   - [Workflow 3: Multi-Document Executive Summary Flow](#workflow-3-multi-document-executive-summary-flow)
-   - [Workflow 4: Vision OCR CM/L Validation Flow](#workflow-4-vision-ocr-cml-validation-flow)
-   - [Workflow 5: Statutory Penalties & Legal Risk Assessment](#workflow-5-statutory-penalties--legal-risk-assessment)
-   - [Workflow 6: Audit Report Generation & Blob Export](#workflow-6-audit-report-generation--blob-export)
-7. [Elevated Enterprise Navy & Gold Design System](#7-elevated-enterprise-navy--gold-design-system)
-8. [Module & File Structure Breakdown](#8-module--file-structure-breakdown)
-9. [API Endpoint Reference](#9-api-endpoint-reference)
+ManakSetu is a four-tier system: a React SPA talks to an async FastAPI engine; the engine reasons over a local IS PDF cache and CM/L registry, calling Google Gemini Flash only for language, vision, and structured scoring.
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                        CLIENT TIER                              │
+│  React 19 + Vite 6 SPA  ·  Tailwind Navy/Gold  ·  Web Speech    │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ HTTPS / JSON / multipart
+┌──────────────────────────────▼──────────────────────────────────┐
+│                         API TIER                                │
+│  FastAPI ASGI  ·  Pydantic schemas  ·  /search /gap-analysis    │
+│  /cml  /export  ·  CORS  ·  Uvicorn                             │
+└──────────────┬───────────────────────────────┬──────────────────┘
+               │                               │
+┌──────────────▼──────────────┐  ┌─────────────▼─────────────────┐
+│      AI INTEL LAYER         │  │   LOCAL PERSISTENCE LAYER     │
+│  Google Gemini Flash        │  │  stored_documents/  (IS PDFs) │
+│  Prompt reasoning           │  │  cml_database.json  (licenses)│
+│  Multimodal vision OCR      │  │  temp_uploads/      (scratch) │
+│  Multilingual translation   │  └───────────────────────────────┘
+└─────────────────────────────┘
+```
+
+### 1.1 Client Tier
+
+| Concern | Implementation |
+| --- | --- |
+| Runtime | React 19 SPA bundled by Vite 6 |
+| Styling | Tailwind CSS v4 `@theme` tokens: Navy `#0B2545`, Gold `#D4AF37`, surfaces `#071527` / `#13315C` |
+| Speech | Web Speech API — `SpeechRecognition` (Hindi `hi-IN`, English `en-IN`, Marathi `mr-IN`) and `speechSynthesis` TTS |
+| HTTP | Axios client (`frontend/src/services/api.js`) targeting `http://localhost:8000/api` |
+| Visualization | Recharts analytics; interactive PDF viewer for citation jump-to-page |
+
+Tabs: Standards search, Gap Analysis, Summary, Penalties, CM/L Scanner, Analytics.
+
+### 1.2 API Tier
+
+FastAPI ASGI app in `backend/app/main.py` (Uvicorn, reload in development).
+
+- **Pydantic** request bodies: `SearchRequest`, `PreloadSearchRequest`, `GapAnalysisRequest`, `ExportPayload`, etc.
+- **python-multipart** for PDF and image uploads.
+- **CORS:** `allow_origins=["*"]`, credentials, all methods and headers (tighten for production).
+
+Primary endpoint families:
+
+| Family | Routes | Role |
+| --- | --- | --- |
+| Search | `POST /api/search`, `/api/search/preloaded`, `/api/search/custom` | Clause-cited Q&A over indexed PDFs |
+| Gap | `POST /api/gap-analysis` | Spec vs standard PASS/WARNING/FAIL |
+| CML | `POST /api/cml-verify`, `POST /api/cml/verify-enhanced`, `GET /api/cml/registry` | Vision + registry |
+| Export | `POST /api/export/pdf`, `POST /api/export/excel` | Binary report download |
+| Docs | `GET /api/documents`, `POST /api/upload` | Local PDF cache CRUD |
+| Intel | `POST /api/summary`, `POST /api/penalties`, `GET /api/analytics/metrics` | Digest, liability, KPIs |
+
+### 1.3 AI Intel Layer
+
+`backend/app/core/ai_engine.py` wraps `google.genai`.
+
+| Capability | Mechanism |
+| --- | --- |
+| Prompt reasoning | `generate_ai_response(prompt)` for search, gap JSON, summary, penalties |
+| Multimodal vision OCR | `generate_ai_vision_response(prompt, image_bytes, mime_type)` with `types.Part.from_bytes` |
+| Multilingual | Language instructions (English / Hindi / Marathi, plus Gujarati, Bengali, Tamil on the API) injected into every prompt |
+| Resilience | Primary `GEMINI_MODEL` then Flash fallbacks on 404 / 429 / 503 / 500 |
+
+The API key is loaded from `backend/.env` (`GEMINI_API_KEY`) and never sent to the browser.
+
+### 1.4 Local Persistence Layer
+
+| Store | Path | Purpose |
+| --- | --- | --- |
+| IS PDF cache | `backend/stored_documents/` | Official standards used for search, gap analysis, citations, analytics |
+| CM/L registry | `backend/cml_database.json` | Offline license records: number, manufacturer, standard, validity, status |
+| Scratch | `backend/temp_uploads/` | Custom-search uploads that should not pollute the official cache |
+
+No remote government API is required at request time. Local files are the source of truth for availability.
 
 ---
 
-## 1. Executive Summary
+## 2. Data Flow & Processing Pipelines
 
-The **BIS Standard Compliance & Analytics Portal** is an authoritative enterprise regulatory intelligence platform. Built specifically for compliance officers, quality engineers, and statutory auditors operating under the **Bureau of Indian Standards (BIS)** framework, the portal eliminates manual friction in interpreting complex technical specifications and navigating legal obligations under the **BIS Act 2016**.
+### 2.1 PDF Extraction Pipeline (zero-hallucination citations)
 
-### Key Architectural Pillars:
-1. **Clean 6-Tab Navigation:**
-   - **1. Standards:** Unified Q&A with mode switch (BIS Knowledge Base vs. Upload & Query) and embedded interactive voice search.
-   - **2. Gap Analysis:** Automated evaluation of manufacturer or lab test specifications against statutory BIS tolerance limits.
-   - **3. Summary:** Multi-document executive compliance digest generator scoped to selected standards.
-   - **4. Penalties:** Legal liability, fine structure, and offence extraction under the BIS Act 2016.
-   - **5. CM/L Scanner:** Multimodal Vision OCR and local registry cross-validation to detect counterfeit ISI marks.
-   - **6. Analytics:** Telemetry dashboard with KPI metrics, compliance health scoring, and Recharts visualizations.
-2. **Sidebar Multi-Document Selector:** Dedicated interactive checkbox selector with "Select All Standards" / "Clear Selection" controlling query scope across all analysis tabs without cluttering sidebars with upload zones.
-3. **Unified Mode Toggle in Search:** Seamlessly switch between querying indexed BIS standards and uploading an ad-hoc custom document directly inside the search card.
-4. **Embedded Global Voice Search:** Interactive `<MicButton />` directly in search inputs with automatic speech recognition (`hi-IN` / `en-IN` / `mr-IN`) and **"🔊 Read Aloud"** female voice synthesis on all result cards.
-5. **Corrosion-Free Binary Exports:** ReportLab PDF (`application/pdf`) and OpenPyXL Excel exports with blob URL download handling.
+Goal: every model citation can be traced to a real page.
+
+```text
+stored_documents/*.pdf
+        │
+        ▼
+  PyMuPDF (fitz.open)
+        │  for each page:
+        │    page.get_text("text")
+        │    prefix: "--- Doc: {filename} | Page {n} ---"
+        ▼
+  combined_text  (capped ~500K chars)
+        │
+        ▼
+  Gemini Flash  (must emit [Doc: <file.pdf> | Page <N>])
+        │
+        ▼
+  SPA ResultCard + InteractivePdfViewer  (jump to page N)
+```
+
+Implementation: `pdf_service.extract_text_from_all_pdfs()`. Preloaded search (`routes_preload_search.py`) instructs the model to use the exact citation syntax `[Doc: <Document_Name.pdf> | Page <Page_Number>]`. Voice mode suppresses markdown tables so TTS remains speakable.
+
+### 2.2 Vision OCR Pipeline (CM/L authenticity)
+
+```text
+Label image (JPEG / PNG / WebP)
+        │  POST /api/cml/verify-enhanced
+        ▼
+  Gemini Vision  (vision_service.analyze_cml_image)
+        │  extracts JSON: cml_number, manufacturer, standard, is_valid
+        ▼
+  Fuzzy match vs cml_database.json
+        │  digit-stripped license compare
+        │  manufacturer substring fallback
+        ▼
+  Status badge: VALID | EXPIRED | SUSPENDED | UNREGISTERED | NOT_FOUND_IN_REGISTRY
+```
+
+Composite authenticity is `db_matched && status == VALID`. Registry listing remains available via `GET /api/cml/registry` with no Gemini call.
+
+### 2.3 Report Generation Pipeline
+
+```text
+UI payload { title, content, doc_names }
+        │
+        ├── POST /api/export/pdf
+        │         ▼
+        │   ReportLab SimpleDocTemplate + NumberedCanvas
+        │   Navy/Gold header, page X of Y footer, structured sections
+        │         ▼
+        │   application/pdf  →  BIS_Compliance_Report.pdf
+        │
+        └── POST /api/export/excel
+                  ▼
+            pandas DataFrame → OpenPyXL engine
+            sheets: Audit Summary + Compliance Checklist
+                  ▼
+            .xlsx download
+```
+
+Implementation: `export_service.generate_compliance_pdf` / `generate_compliance_excel`. Numbered footers and export timestamps support audit trail / tamper-evident presentation.
+
+### 2.4 Gap Analysis Pipeline
+
+1. User (or preset template) submits technical specs.
+2. All (or hinted) IS PDFs are extracted with page markers.
+3. Gemini returns **only** JSON: `overall_status`, `compliance_score`, per-parameter PASS/WARNING/FAIL.
+4. Frontend heatmap / progress bars render the score and critical failure counts.
 
 ---
 
-## 2. Monorepo Architecture & Clean Navigation
+## 3. Resilience & Security Architecture
 
-```
-+==========================================================================================+
-|                                CLIENT TIER (Browser / SPA)                               |
-|                                                                                          |
-|   +----------------------------------------------------------------------------------+   |
-|   |                        React 19 + Vite SPA (Port 5173)                           |   |
-|   |                                                                                  |   |
-|   |   +--------------------------------------------------------------------------+   |   |
-|   |   |        LanguageProvider (i18n State: English / Hindi / Marathi)          |   |   |
-|   |   +--------------------------------------------------------------------------+   |   |
-|   |                                                                                  |   |
-|   |   +--------------------------------------------------------------------------+   |   |
-|   |   |  Global Selected Documents State: selectedDocuments = ["ALL"] or [...]  |   |   |
-|   |   +--------------------------------------------------------------------------+   |   |
-|   |                                                                                  |   |
-|   |   +--------------------+  +--------------------+  +--------------------------+   |   |
-|   |   | 1. Standards       |  | 2. Gap Analysis    |  | 3. Summary               |   |   |
-|   |   | (SearchTab: BIS/   |  | (GapAnalysisTab)   |  | (SummaryTab)             |   |   |
-|   |   |  Upload Switch)    |  |                    |  |                          |   |   |
-|   |   +--------------------+  +--------------------+  +--------------------------+   |   |
-|   |   | 4. Penalties       |  | 5. CM/L Scanner    |  | 6. Analytics             |   |   |
-|   |   | (PenaltiesTab)     |  | (CMLScannerTab)    |  | (AnalyticsDashboard)     |   |   |
-|   |   +--------------------+  +--------------------+  +--------------------------+   |   |
-|   |                                                                                  |   |
-|   |   +--------------------------------------+  +--------------------------------+   |   |
-|   |   | Sidebar Multi-Select Selector        |  | Embedded Voice + TTS Player    |   |   |
-|   |   | (Checkboxes + Select All)            |  | (MicButton + ResultCard)       |   |   |
-|   |   +--------------------------------------+  +--------------------------------+   |   |
-|   +-----------------------------------------+----------------------------------------+   |
-+=============================================|============================================+
-                                              |
-                          Axios REST API Client (JSON / FormData / Blob)
-                          Web Speech API (SpeechRecognition / SpeechSynthesis)
-                                              |
-+=============================================v============================================+
-|                               BACKEND TIER (FastAPI, Port 8000)                          |
-|                                                                                          |
-|   +----------------------------------------------------------------------------------+   |
-|   |  FastAPI Application (app/main.py)                                               |   |
-|   |  CORS Middleware: allow_origins=["*"]                                            |   |
-|   +----+----------+----------+----------+----------+----------+----------+-----------+   |
-|        |          |          |          |          |          |          |               |
-|   +----v--+  +----v--+  +----v---+ +----v---+ +----v---+ +----v---+ +----v---+           |
-|   |Search |  |Preload|  |Custom  | | Gap    | |Summary | |Penalty | |Vision  |           |
-|   |Routes |  |Search |  |Search  | |Analysis| |Routes  | |Routes  | |CML DB  |           |
-|   +-------+  +-------+  +----+---+ +----+---+ +--------+ +--------+ +----+---+           |
-|                              |          |                                |               |
-|   +--------------------------v----------v--------------------------------v------------+   |
-|   |                              Service Layer                                        |   |
-|   |  - pdf_service.py: Filtered PyMuPDF extraction (selected_documents support)       |   |
-|   |  - vision_service.py: Gemini Vision label parsing & JSON extraction               |   |
-|   |  - export_service.py: ReportLab NumberedCanvas PDF & OpenPyXL Excel generation   |   |
-|   |  - ai_engine.py: Google GenAI client abstraction with resilient fallback          |   |
-|   +------------------------------------------+----------------------------------------+   |
-+==============================================|===========================================+
-                                               |
-                                 HTTPS REST API Requests
-                                               |
-                               +---------------v---------------+
-                               |     Google Gemini 2.5 Flash   |
-                               |  - Multi-Document Text Gen    |
-                               |  - Vision Multimodal OCR      |
-                               |  - Multilingual Translation   |
-                               +-------------------------------+
+### 3.1 Local fallback (availability)
 
-                    +------------------------------------------+
-                    |           LOCAL PERSISTENCE              |
-                    |                                          |
-                    |  backend/stored_documents/ (Official)    |
-                    |  backend/temp_uploads/     (Custom PDFs) |
-                    |  backend/cml_database.json (Licenses)    |
-                    |  backend/.env              (API Keys)    |
-                    +------------------------------------------+
-```
+| Failure mode | Fallback |
+| --- | --- |
+| Official BIS / government portal down | Entire product operates on `stored_documents/` + `cml_database.json` |
+| Gemini 404 / 429 / 503 / 500 | `ai_engine` walks Flash fallback model list |
+| Empty CM/L registry file | Vision still returns OCR findings; status `NOT_FOUND_IN_REGISTRY` |
+| Frontend cannot reach API | Document list fetch fails softly (“backend booting”) |
+
+Search, analytics page counts, document listing, and registry browse do not depend on live government HTTP.
+
+### 3.2 CORS
+
+Configured in `app/main.py`:
+
+- `allow_origins=["*"]` for local Vite (`localhost:5173`)
+- `allow_credentials=True`
+- all methods and headers
+
+Production hardening: replace `*` with the deployed SPA origin.
+
+### 3.3 Input validation (Pydantic)
+
+- JSON bodies validated by Pydantic `BaseModel` (required `query` / `specs` / `title`+`content`).
+- Empty specs rejected with HTTP 400.
+- CM/L uploads restricted to `image/jpeg`, `image/png`, `image/webp`.
+- Missing PDF cache returns 400 with a clear “no standards loaded” message.
+- Global exception handler maps uncaught errors to JSON `{"detail": "..."}` with HTTP 500.
+
+### 3.4 Safe API key management
+
+- `GEMINI_API_KEY` lives only in `backend/.env` (gitignored).
+- Loaded via `python-dotenv` in `app/core/config.py`.
+- Gemini client is constructed server-side; the SPA never receives the key.
+- Ship `backend/.env.example` with placeholders only.
 
 ---
 
-## 3. Technology Stack & Technical Justifications
+## 4. Four-Tier Interaction Diagrams
 
-| Tier / Component | Technology | Technical Justification |
-|---|---|---|
-| **Backend Framework** | **FastAPI (Python 3.10+)** | Async request handling via Starlette ASGI; automatic OpenAPI documentation (`/docs`); high throughput for I/O-bound AI requests. |
-| **Generative AI Engine** | **Google Gemini 2.5 Flash (`google-genai` SDK)** | 1-million-token context window allows feeding entire standard documents in a single prompt; resilient fallback chain handling 503/429 spikes. |
-| **Document Processing** | **PyMuPDF (`fitz`)** | Ultra-fast C-backed PDF parsing with selective file filtering and per-page boundary markers (`[Doc: ... \| Page N]`). |
-| **Reporting & Export** | **ReportLab & OpenPyXL** | Programmatic PDF generation with custom `NumberedCanvas` footers; clean multi-sheet Excel compliance workbook generation. |
-| **Frontend Framework** | **React 19 + Vite 6** | Fast virtual DOM reconciliation, component modularity, and instant Hot Module Replacement (HMR). |
-| **Speech Engine** | **Web Speech API (`SpeechRecognition` & `speechSynthesis`)** | Native in-browser speech recognition and natural female voice synthesis embedded directly in search bars and result cards. |
-| **Internationalization** | **React Context (`LanguageContext.jsx`)** | Comprehensive UI dictionaries across English, Hindi, and Marathi with synchronized AI prompt instructions. |
-| **Data Visualization** | **Recharts** | Composable, responsive SVG charts matching the enterprise navy & gold design tokens. |
-| **Styling** | **Tailwind CSS v4** | Elevated enterprise design system with deep navy surfaces (`#0B2545`), gold borders (`#D4AF37`), and crisp contrast typography. |
+### 4.1 ASCII — request lifecycle
 
----
-
-## 4. Sidebar Multi-Document Selector & Global State
-
-The left sidebar (`Sidebar.jsx`) has been refactored into a dedicated **Multi-Document Selector**:
-- **Removal of Upload Clutter:** The upload dropzone has been removed from the sidebar to give full vertical space to document filtering.
-- **Interactive Checkboxes:** Each standard PDF in the repository is rendered with an interactive checkbox.
-- **Select All Toggle:** A single button flips between **"Select All Standards"** and **"Clear Selection"**.
-- **Global Selection Propagation:** The selected document list (`selectedDocuments`) resides in `App.jsx` and is passed directly to `SearchTab`, `SummaryTab`, and `PenaltiesTab`.
-- **Selected Count Pill:** Shows real-time selection telemetry (e.g. `1/1 selected`).
-
----
-
-## 5. Unified Standards Search: Mode Toggle & Embedded Voice
-
-`SearchTab.jsx` merges central repository search and custom PDF analysis into a single unified page:
-
-### A. Segmented Mode Switch
-- **BIS Knowledge Base (Default):** Evaluates queries against documents currently selected in the sidebar selector.
-- **Upload & Query:** Renders an inline drag-and-drop PDF upload zone directly inside the search card for ad-hoc custom document Q&A.
-
-### B. Embedded Voice Search (`MicButton.jsx`)
-- Interactive microphone button embedded directly inside the search input.
-- Captures live audio in the active language (`hi-IN`, `en-IN`, `mr-IN`).
-- Automatically transcribes speech and triggers analysis upon completion.
-
-### C. Female Voice Synthesis Player
-- Every `ResultCard.jsx` features a dedicated **"🔊 Read Aloud"** button.
-- Uses acoustic filtering in `speech.js` to select a natural female TTS voice matching the language.
-
----
-
-## 6. Core Workflows & Data Flows
-
-### Workflow 1: Unified Standards Search (BIS Repository & Custom PDF Mode)
-```
-User selects Search Mode in SearchTab.jsx:
-  Option A (BIS Knowledge Base):
-    - Uses selectedDocuments from sidebar
-    - POST /api/search/preloaded -> PyMuPDF filtered extraction -> Gemini analysis
-  Option B (Upload & Query):
-    - User drops custom PDF
-    - POST /api/search/custom (multipart/form-data) -> temp_uploads extraction -> Gemini analysis
-                      |
-                      v
-ResultCard renders findings + "🔊 Read Aloud" TTS player + PDF jump buttons
+```text
+ Inspector / Auditor
+         │
+         │  type, mic (Web Speech), or camera upload
+         ▼
+ ┌─────────────────── CLIENT TIER ───────────────────┐
+ │  React 19 + Vite 6                                 │
+ │  Tailwind Navy #0B2545 / Gold #D4AF37              │
+ │  LanguageContext  ·  ResultCard  ·  CMLScanner     │
+ └───────────────────────┬────────────────────────────┘
+                         │  Axios JSON / multipart
+                         ▼
+ ┌─────────────────── API TIER ───────────────────────┐
+ │  FastAPI (Uvicorn ASGI)                             │
+ │  Pydantic validate → route handler                  │
+ │  /search  /gap-analysis  /cml  /export              │
+ └───────────┬───────────────────────────┬────────────┘
+             │                           │
+             ▼                           ▼
+ ┌─────────────────────┐     ┌────────────────────────┐
+ │  AI INTEL LAYER     │     │  LOCAL PERSISTENCE     │
+ │  Gemini Flash       │◄───►│  stored_documents/     │
+ │  text + vision      │     │  cml_database.json     │
+ │  multilingual out   │     │  (always-on cache)     │
+ └─────────────────────┘     └────────────────────────┘
+             │
+             ▼
+      JSON / PDF / XLSX  →  Client heatmap, citations, badges
 ```
 
-### Workflow 2: Predictive Gap Analysis Flow
-```
-User enters product technical specifications
-                      |
-                      v
-POST /api/gap-analysis
-                      |
-                      v
-Gemini evaluates parameters against BIS standard limits
-                      |
-                      v
-Renders Compliance Heatmap (PASS/WARNING/FAIL) with clause citations & remedies
+### 4.2 Mermaid — 4-tier system
+
+```mermaid
+flowchart TB
+    subgraph Client["Client Tier"]
+        SPA["React 19 + Vite 6 SPA"]
+        Speech["Web Speech API\nHindi / English / Marathi"]
+        Theme["Tailwind tokens\nNavy #0B2545 · Gold #D4AF37"]
+        SPA --- Speech
+        SPA --- Theme
+    end
+
+    subgraph API["API Tier"]
+        FastAPI["FastAPI ASGI · Uvicorn"]
+        Pydantic["Pydantic schemas"]
+        Routes["/search · /gap-analysis · /cml · /export"]
+        FastAPI --> Pydantic --> Routes
+    end
+
+    subgraph AI["AI Intel Layer"]
+        Gemini["Google Gemini Flash"]
+        Reason["Prompt reasoning"]
+        Vision["Multimodal Vision OCR"]
+        I18n["Multilingual translation"]
+        Gemini --> Reason
+        Gemini --> Vision
+        Gemini --> I18n
+    end
+
+    subgraph Local["Local Persistence Layer"]
+        PDFs["stored_documents/\nIS PDF cache"]
+        CML["cml_database.json\nOffline license DB"]
+    end
+
+    SPA -->|"JSON / multipart"| FastAPI
+    Routes -->|"grounded prompts"| Gemini
+    Routes -->|"page-indexed extract"| PDFs
+    Routes -->|"fuzzy license match"| CML
+    Vision -->|"OCR fields"| CML
+    FastAPI -->|"citations · heatmap · PDF/XLSX"| SPA
 ```
 
-### Workflow 3: Multi-Document Executive Summary Flow
-```
-User checks desired standards in sidebar -> clicks "Generate Executive Digest"
-                      |
-                      v
-POST /api/summary { language, selected_documents }
-                      |
-                      v
-Synthesizes mandatory obligations, testing protocols, and risk areas for selected scope
-```
+### 4.3 Mermaid — pipelines
 
-### Workflow 4: Vision OCR CM/L Validation Flow
-```
-User uploads product label photograph
-                      |
-                      v
-POST /api/cml/verify-enhanced -> Gemini Vision OCR -> cml_database.json cross-check
-                      |
-                      v
-Displays composite verification status (VALID / EXPIRED / SUSPENDED / UNREGISTERED)
-```
+```mermaid
+flowchart LR
+    subgraph PDFPipe["PDF Extraction"]
+        A1[IS PDF] --> A2[PyMuPDF page text]
+        A2 --> A3["--- Doc | Page N ---"]
+        A3 --> A4[Gemini + citations]
+    end
 
-### Workflow 5: Statutory Penalties & Legal Risk Assessment
-```
-User checks desired standards in sidebar -> clicks "Extract Legal Penalties"
-                      |
-                      v
-POST /api/penalties { language, selected_documents }
-                      |
-                      v
-Extracts penal clauses, fine ranges, imprisonment terms, and mitigation matrices
-```
+    subgraph VisionPipe["Vision OCR"]
+        B1[Label image] --> B2[Gemini Vision]
+        B2 --> B3[Fuzzy match registry]
+        B3 --> B4[Status badge]
+    end
 
-### Workflow 6: Audit Report Generation & Blob Export
-```
-User clicks "PDF Report" on any ResultCard
-                      |
-                      v
-POST /api/export/pdf -> ReportLab builds PDF buffer
-                      |
-                      v
-FastAPI returns Response(media_type="application/pdf", filename="BIS_Compliance_Report.pdf")
-                      |
-                      v
-Axios receives responseType: 'blob' -> window.URL.createObjectURL(blob) -> file downloaded
-```
-
----
-
-## 7. Elevated Enterprise Navy & Gold Design System
-
-| Design Token | Value | Applied Surface | Rationale |
-|---|---|---|---|
-| **Deep Midnight Navy** | `#071527` | Base background, scrollbar track, modal backdrop | Conveys high-grade security, depth, and executive gravitas |
-| **Enterprise Navy** | `#0B2545` | Card surfaces, sidebar, navbar, table headers | Institutional foundation, government document aesthetic |
-| **Surface Navy** | `#13315C` | Elevated gradient card backgrounds, active pills | Depth separation without heavy shadows |
-| **Imperial BIS Gold** | `#D4AF37` | Active borders, key badges, citation buttons, icons | Evokes official gold certification seals and standards authority |
-| **Bright Gold Highlight**| `#FFC107` | Subheadings, button hover gradients, active tabs | High visibility accent for interactive actions |
-| **Soft Gold Text** | `#FFD54F` | Code blocks, KPI numbers, highlighted clauses | Optimal readability and contrast against deep navy |
-| **Indian Tricolor Bar** | `#FF9933` / `#FFFFFF` / `#128807` | 3px Navbar Top Stripe | National identity honoring the Saffron, White, and Green |
-
----
-
-## 8. Module & File Structure Breakdown
-
-```
-Testing 2/
-├── backend/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── routes_preload_search.py  # BIS Knowledge Base search (multi-doc filter)
-│   │   │   ├── routes_custom_search.py   # Ad-hoc custom PDF search
-│   │   │   ├── routes_gap_analysis.py    # Predictive tech specs reviewer
-│   │   │   ├── routes_summary.py         # Multi-doc executive compliance digests
-│   │   │   ├── routes_penalties.py       # Multi-doc penalties & legal liabilities
-│   │   │   ├── routes_cml_vision.py      # Vision OCR + local registry lookup
-│   │   │   ├── routes_analytics.py       # Portal metrics & KPI aggregator
-│   │   │   ├── routes_export.py          # ReportLab PDF & OpenPyXL Excel export
-│   │   │   └── routes_upload.py          # Standard PDF repository management
-│   │   ├── core/
-│   │   │   ├── ai_engine.py              # Gemini client abstraction with fallbacks
-│   │   │   └── config.py                 # Central settings & paths
-│   │   ├── services/
-│   │   │   ├── pdf_service.py            # PyMuPDF extractor with document filtering
-│   │   │   ├── vision_service.py         # Gemini Vision label OCR
-│   │   │   └── export_service.py         # NumberedCanvas PDF & Excel builders
-│   │   └── main.py                       # FastAPI entry point & CORS configuration
-│   ├── cml_database.json                 # Curated BIS license database
-│   ├── stored_documents/                 # Official preloaded BIS PDFs
-│   ├── temp_uploads/                     # Ad-hoc custom workspace PDFs
-│   ├── test_enterprise.py                # Backend unit & integration test suite
-│   ├── requirements.txt                  # Python dependencies
-│   └── .env                              # API keys & configuration
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Navbar.jsx                # Enterprise Navy top bar with language dropdown
-│   │   │   ├── Sidebar.jsx               # Multi-document selector with Select All toggle
-│   │   │   ├── ResultCard.jsx            # Markdown viewer with TTS & export controls
-│   │   │   ├── InteractivePdfViewer.jsx  # Embedded PDF modal with page jump
-│   │   │   ├── ProgressBar.jsx           # Corporate progress indicator
-│   │   │   └── MicButton.jsx             # Embedded interactive microphone button
-│   │   ├── context/
-│   │   │   └── LanguageContext.jsx       # Global i18n dictionary (EN / HI / MR)
-│   │   ├── pages/
-│   │   │   ├── SearchTab.jsx             # Unified Standards Search (BIS + Upload Mode)
-│   │   │   ├── GapAnalysisTab.jsx        # Predictive Tech Specs Gap Analysis
-│   │   │   ├── SummaryTab.jsx            # Multi-document Executive Summary generator
-│   │   │   ├── PenaltiesTab.jsx          # Multi-document Penalties & Risks extractor
-│   │   │   ├── CMLScannerTab.jsx         # Vision OCR license authenticator
-│   │   │   └── AnalyticsDashboard.jsx    # Regulatory KPIs & Recharts telemetry
-│   │   ├── services/
-│   │   │   └── api.js                    # Central Axios client with blob handling
-│   │   ├── utils/
-│   │   │   └── speech.js                 # Web Speech API helpers (Recognition & TTS)
-│   │   ├── App.jsx                       # 6-tab navigation & global selection state
-│   │   ├── main.jsx                      # React 19 entry point
-│   │   └── index.css                     # Elevated Navy & Gold design tokens & styles
-│   ├── package.json                      # Frontend dependencies
-│   └── vite.config.js                    # Vite bundler configuration
-│
-└── PROJECT_ARCHITECTURE.md               # Master system architecture document
+    subgraph ReportPipe["Report Generation"]
+        C1[Audit payload] --> C2[ReportLab PDF]
+        C1 --> C3[OpenPyXL Excel]
+    end
 ```
 
 ---
 
-## 9. API Endpoint Reference
+## 5. Component Map (code)
 
-| HTTP Method | Endpoint | Description | Request Payload | Response Type |
-|---|---|---|---|---|
-| `POST` | `/api/search/preloaded` | Search indexed standards with optional document filtering | `{ query, language, selected_documents, voice_mode }` | JSON (`response`, `documents_searched`) |
-| `POST` | `/api/search/custom` | Analyze an uploaded custom PDF in isolated workspace | `multipart/form-data` (`file`, `query`, `language`) | JSON (`response`, `filename`, `temp_file`) |
-| `POST` | `/api/gap-analysis` | Predictive gap analysis of technical specifications | `{ specs, standard_hint, language }` | JSON (`overall_status`, `score`, `parameters[]`) |
-| `POST` | `/api/summary` | Executive regulatory compliance digest with filter scope | `{ language, selected_documents }` | JSON (`response`, `documents_analyzed`) |
-| `POST` | `/api/penalties` | Extract offences and fine structures with filter scope | `{ language, selected_documents }` | JSON (`response`, `documents_analyzed`) |
-| `POST` | `/api/cml/verify-enhanced` | Multimodal Vision OCR + registry cross-check | `multipart/form-data` (`file`) | JSON (`ocr_findings`, `registry_verification`) |
-| `GET` | `/api/cml/registry` | Retrieve all entries in the BIS CM/L license registry | None | JSON (`records[]`, `total`) |
-| `GET` | `/api/analytics/metrics` | Calculate real-time portal telemetry and KPIs | None | JSON (`overview`, `standards`, `charts`) |
-| `POST` | `/api/export/pdf` | Generate ReportLab compliance audit PDF report | `{ title, content, doc_names }` | Binary stream (`application/pdf`) |
-| `POST` | `/api/export/excel` | Generate OpenPyXL compliance audit Excel workbook | `{ title, content, doc_names }` | Binary stream (`.xlsx`) |
-| `GET` | `/api/documents` | List all active stored BIS standards | None | JSON (`documents[]`, `count`) |
-| `GET` | `/api/documents/{file}/view`| Stream standard or temp PDF file for in-browser viewer | None | Binary stream (`application/pdf`) |
-| `POST` | `/api/upload` | Add new official standard PDF to repository | `multipart/form-data` (`files`) | JSON (`uploaded[]`, `errors[]`) |
-| `DELETE` | `/api/documents/{file}` | Remove a standard PDF from the repository | None | JSON (`message`) |
+| Tier | Module | Responsibility |
+| --- | --- | --- |
+| Client | `frontend/src/App.jsx` | Tab shell, document selection |
+| Client | `frontend/src/services/api.js` | REST client |
+| Client | `frontend/src/utils/speech.js` | STT / TTS |
+| API | `backend/app/main.py` | App factory, CORS, routers |
+| API | `backend/app/api/routes_*.py` | Endpoint handlers |
+| AI | `backend/app/core/ai_engine.py` | Gemini client + fallbacks |
+| Local | `backend/app/services/pdf_service.py` | Page-indexed extraction |
+| Local | `backend/app/api/routes_cml_vision.py` | Registry fuzzy match |
+| Reports | `backend/app/services/export_service.py` | PDF + Excel binaries |
 
----
-
-*Document Version 2.3.0 — Bureau of Indian Standards Compliance & Analytics Portal.*  
-*Maintained by the Enterprise Architecture Team.*
+This architecture keeps **grounding data local** and **language/vision intelligence remote**, so compliance answers stay citeable while the portal remains available when official sites are down.
