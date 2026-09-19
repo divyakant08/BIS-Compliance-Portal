@@ -38,6 +38,21 @@ ManakSetu is an AI-powered Bureau of Indian Standards (BIS) compliance portal. I
 
 ---
 
+## Team & Responsibilities
+
+Built by **Team Techno Sync**.
+
+| Member | Role | Key deliverables |
+| --- | --- | --- |
+| **Divyakant** | Team Lead & Full-Stack / AI Lead | System architecture, Gemini Flash engine, FastAPI backend, deployment |
+| **Nishi Sharma** | Frontend & Voice UI Lead | React 19 SPA, Web Speech API (Hindi / English / Marathi Voice AI) |
+| **Diya Tomar** | Vision OCR & Parsing Lead | PyMuPDF page-indexed parsing, Gemini Vision OCR for product labels |
+| **Keshav Kumar Sharma** | Backend & DB Engineer | FastAPI endpoints, Pydantic schemas, local fallback persistence |
+| **Himanshu** | Report Automation Lead | ReportLab PDF audit generator, OpenPyXL automated checklist export |
+| **Avni Sharma** | QA & BIS Compliance Lead | BIS IS code validation, predictive gap analysis accuracy testing |
+
+---
+
 ## Step-by-Step Setup Guide (From Scratch)
 
 ### Prerequisites
